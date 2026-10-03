@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<!--
+SETUP / SECURITY NOTES
+1. Open SETTINGS and paste your Firebase webConfig (Firebase console > Project settings > Web app). No config = LOCAL ONLY. The Firestore region (e.g. europe-west3) is chosen when the database is created in the console; this client code needs no region setting.
+2. VAULT ID = SHA-256( PBKDF2-SHA256(PIN, salt, 200k iterations) + salt ), 64 hex chars. DEFAULT SALT is c7542a0dc13bb51c80e897b4d2e2dc48 (hard-coded as requested).
+   A salt that is visible in this file is public: anyone holding this file can enumerate all 10,000 PINs against vault ids. Only the Firestore rules below protect you then.
+   To get a secret salt, use "LINK EXISTING VAULT" on the lock screen with your own random 32-hex value.
+3. Firestore data is unencrypted. Suggested rules (blocks listing vaults): match /vaults/{id} { allow get, create, update: if true; allow list, delete: if false; }
+4. Sync is offline-first, last-write-wins on one document per vault; a pending flag is flushed when the connection returns.
+5. Gemini key + Firebase config live only in this browser's localStorage and are NOT included in backups. Scanned images/text go to Google. LaTeX is rendered offline as Unicode math (raw LaTeX is kept). Bump CACHE in sw.js after updates.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://*.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://www.gstatic.com https://*.gstatic.com https://generativelanguage.googleapis.com https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>J.A.R.V.I.S. // BATCAVE OS</title>
+<style>
+:root{--bg:#000;--primary-color:#00f3ff;--pc-rgb:0,243,255;--cy:var(--primary-color);--am:#ffb700;--sl:#1e232a;--tx:#d8f8ff;--mu:#6f8791;--rd:#ff4d5e;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+html,body{background:var(--bg);color:var(--tx);font-family:var(--mono);font-size:14px}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0;-webkit-user-select:none;user-select:none}
+input,textarea{width:100%;background:#05090b;border:1px solid var(--sl);border-radius:4px;padding:11px;outline:none;font-size:16px}
+input:focus,textarea:focus{border-color:var(--cy);box-shadow:0 0 8px rgba(var(--pc-rgb),.35)}
+#app{max-width:980px;margin:0 auto;padding:calc(env(safe-area-inset-top) + 10px) calc(env(safe-area-inset-left) + 14px) calc(env(safe-area-inset-bottom) + 24px) calc(env(safe-area-inset-right) + 14px)}
+.hud{display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--sl);padding-bottom:10px;flex-wrap:wrap}
+.hud h1{font-size:15px;letter-spacing:.2em;color:var(--cy);text-shadow:0 0 10px rgba(var(--pc-rgb),.7)}
+.sub{font-size:10px;letter-spacing:.18em;color:var(--mu);text-transform:uppercase}
+.badge{border:1px solid var(--am);color:var(--am);padding:3px 8px;font-size:10px;letter-spacing:.15em;box-shadow:0 0 8px rgba(255,183,0,.35);animation:pl 2.4s infinite}
+@keyframes pl{50%{box-shadow:0 0 14px rgba(255,183,0,.7)}}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-top:14px}
+.card{background:linear-gradient(160deg,#07100f,#000);border:1px solid var(--sl);padding:14px;text-align:left;min-height:96px;clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px));transition:border-color .2s,transform .12s,box-shadow .2s}
+.card:hover{border-color:var(--cy);box-shadow:0 0 14px rgba(var(--pc-rgb),.2)}.card:active{transform:scale(.97)}
+.card b{display:block;font-size:20px;color:var(--cy);margin-top:6px;text-shadow:0 0 8px rgba(var(--pc-rgb),.5);font-weight:500}
+.card.am b{color:var(--am);text-shadow:0 0 8px rgba(255,183,0,.5)}
+.drop{margin-top:14px;border:1px dashed var(--cy);padding:18px;text-align:center;color:var(--cy);display:block;cursor:pointer;background:rgba(var(--pc-rgb),.03);letter-spacing:.12em}
+.drop.over{background:rgba(var(--pc-rgb),.12)}.drop.err{color:var(--rd);border-color:var(--rd);background:rgba(255,77,94,.06)}.drop.busy{color:var(--am);border-color:var(--am);animation:pl 1s infinite;pointer-events:none}
+.btn{min-height:44px;padding:0 14px;border:1px solid var(--cy);color:var(--cy);letter-spacing:.1em;font-size:12px;transition:background .2s,transform .1s}
+.btn:active{transform:scale(.96);background:rgba(var(--pc-rgb),.15)}.btn.am{border-color:var(--am);color:var(--am)}.btn.rd{border-color:var(--rd);color:var(--rd)}
+.row{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.row>*{flex:1}.row>.btn{flex:none}
+.li{border-bottom:1px solid var(--sl);padding:10px 0;display:flex;justify-content:space-between;gap:8px;align-items:center;min-height:44px}
+.mu{color:var(--mu)}.big{font-size:44px;color:var(--cy);text-align:center;margin:10px 0;text-shadow:0 0 14px rgba(var(--pc-rgb),.6)}
+#modal,#lock{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;z-index:50;align-items:flex-end;justify-content:center}
+#modal.on,#lock.on{display:flex}#lock{align-items:center;z-index:99;flex-direction:column;gap:18px;background:#000}
+.sheet{width:min(100%,640px);max-height:90dvh;overflow:auto;background:#030607;border:1px solid var(--cy);box-shadow:0 0 24px rgba(var(--pc-rgb),.25);padding:16px calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 20px) 16px}
+.sh{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;color:var(--cy);letter-spacing:.14em}
+.keys{display:grid;grid-template-columns:repeat(3,76px);gap:10px}.keys .btn{height:60px;font-size:20px}
+.dots{display:flex;gap:14px}.dots i{width:14px;height:14px;border:1px solid var(--cy);border-radius:50%}.dots i.f{background:var(--cy);box-shadow:0 0 10px var(--cy)}
+#toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 18px);transform:translateX(-50%);background:#000;border:1px solid var(--am);color:var(--am);padding:9px 14px;font-size:12px;letter-spacing:.1em;z-index:120;display:none;max-width:92%}
+.msg{padding:9px;margin-top:8px;border-left:2px solid var(--cy);white-space:pre-wrap;background:#04090a}.msg.u{border-color:var(--am);text-align:right}
+pre{white-space:pre-wrap;font-family:var(--mono)}
+.tex{font-size:15px;line-height:1.7;word-break:break-word}.raw{font-size:11px;color:var(--mu);margin-top:6px;white-space:pre-wrap;word-break:break-all}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+</head>
+<body>
+<div id="app">
+  <header class="hud">
+    <div><h1>J.A.R.V.I.S. // BATCAVE OS</h1><div class="sub">UPTIME <span id="up">00:00:00</span> · SYNC <span id="sy">LOCKED</span></div></div>
+    <div style="display:flex;gap:8px;align-items:center"><button class="btn am" id="hs" style="min-height:34px">SETTINGS</button><span class="badge">MARK-XI PROTOCOL</span></div>
+  </header>
+  <label class="drop" id="drop"><span id="dzt">[ UPLOAD SCREENSHOT / SCAN TERMINAL ]</span><div class="sub" style="margin-top:6px">Homework · Sleep · Steps · Nutrition · Exam results — auto-routed</div>
+    <input type="file" id="file" accept="image/*" hidden></label>
+  <main class="grid" id="grid"></main>
+</div>
+<div id="modal"><div class="sheet"><div class="sh"><span id="mt"></span><button class="btn rd" id="mx" style="min-height:36px">CLOSE</button></div><div id="mb"></div></div></div>
+<div id="lock"><div class="badge">SECURITY PROTOCOL</div><div class="sub" id="lt">ENTER 4-DIGIT PASSCODE</div><div class="dots" id="dots"></div><div class="keys" id="keys"></div><button class="sub" id="lr">RESET THIS DEVICE</button><button class="sub" id="ls">LINK EXISTING VAULT (ENTER SALT)</button></div>
+<input type="file" id="bkf" accept=".json,application/json" hidden>
+<div id="toast"></div>
+<script>
+/* ---------- Config ---------- */
+// Default model gemini-3.5-flash-lite; falls back to gemini-2.5-flash only if the first is missing (404).
+const MODELS=['gemini-3.5-flash-lite','gemini-2.5-flash'];
+/* ---------- Helpers (DOM built with textContent only: XSS-safe) ---------- */
+const $=id=>document.getElementById(id);
+const h=(t,a={},...c)=>{const e=document.createElement(t);for(const k in a){if(k==='class')e.className=a[k];else if(k==='value')e.value=a[k];else if(k.startsWith('on'))e[k]=a[k];else e.setAttribute(k,a[k])}c.flat().forEach(x=>e.append(x instanceof Node?x:document.createTextNode(x??'')));return e};
+const pad=n=>String(n).padStart(2,'0'),uid=()=>Math.random().toString(36).slice(2,9);
+const dk=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`,today=()=>dk(new Date());
+const tt=ts=>new Date(ts).toTimeString().slice(0,5),tsOf=(d,t)=>new Date(d+'T'+t+':00').getTime();
+const num=v=>{const n=parseFloat(String(v).trim().replace(',','.'));return isFinite(n)?n:null};
+const toast=m=>{const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._);t._=setTimeout(()=>t.style.display='none',2600)};
+const hap=()=>{try{navigator.vibrate&&navigator.vibrate(12)}catch(e){}};
+/* ---------- Sound (Web Audio synthesizer) ---------- */
+let AC;
+function tone(f0,f1,t,d,type,v){const o=AC.createOscillator(),g=AC.createGain();o.type=type||'sine';o.frequency.setValueAtTime(f0,t);if(f1!==f0)o.frequency.exponentialRampToValueAtTime(f1,t+d);
+  g.gain.setValueAtTime(v||.06,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);o.connect(g);g.connect(AC.destination);o.start(t);o.stop(t+d+.02)}
+function snd(k){
+  if(localStorage.getItem('jv.mute')==='1')return;
+  try{AC=AC||new (window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume();const t=AC.currentTime;
+    switch(k){
+      case'key':tone(880,880,t,.04);break;
+      case'click':tone(660,660,t,.03);break;
+      case'unlock':[0,.09,.18,.27].forEach((o,i)=>tone(300*Math.pow(1.5,i),600*Math.pow(1.5,i),t+o,.16,'triangle',.07));tone(1500,2400,t+.38,.35,'sine',.05);break; // vault unlock: rising sweep + shimmer
+      case'ocr':case'scan':[0,.14,.28].forEach(o=>tone(1400,1400,t+o,.08,'square',.04));break; // triple-beep confirmation
+      case'warn':tone(880,660,t,.18,'sawtooth',.06);tone(880,660,t+.24,.18,'sawtooth',.06);tone(440,330,t+.48,.3,'sawtooth',.06);break; // system warning alert
+      case'deny':tone(190,120,t,.28,'sawtooth');break;
+      case'err':tone(300,200,t,.12,'sawtooth');tone(200,140,t+.14,.18,'sawtooth');break;
+      case'ok':[520,780,1040].forEach((f,i)=>tone(f,f,t+i*.06,.1));break;
+    }
+  }catch(e){}
+}
+document.addEventListener('click',e=>{if(e.target.closest('button,label.drop')&&!e.target.closest('#keys'))snd('click')});
+/* ---------- Speech output (Web Speech API) ---------- */
+const ttsOn=()=>localStorage.getItem('jv.tts')==='1';
+function speak(text){
+  if(!ttsOn()||!('speechSynthesis' in window))return;
+  try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(String(text).replace(/[*_`#>]/g,'').slice(0,1500)),vs=speechSynthesis.getVoices();
+    u.lang='en-GB';u.rate=1.02;u.pitch=.9;const v=vs.find(x=>/en-GB/i.test(x.lang))||vs.find(x=>/^en/i.test(x.lang));if(v)u.voice=v;speechSynthesis.speak(u)}catch(e){}
+}
+function tglVoice(){const b=h('button',{class:'btn',onclick:()=>{
+  if(!('speechSynthesis' in window)){toast('SPEECH OUTPUT NOT SUPPORTED HERE');return}
+  const on=!ttsOn();localStorage.setItem('jv.tts',on?'1':'0');if(!on)speechSynthesis.cancel();b.textContent=on?'VOICE: ON':'VOICE: OFF';if(on)speak('Voice output online.')}},ttsOn()?'VOICE: ON':'VOICE: OFF');return b}
+/* ---------- Themes (CSS root variables) ---------- */
+const THEMES={cyan:['Stark Cyan','#00f3ff','0,243,255'],green:['Matrix Green','#00ff41','0,255,65'],amber:['Amber Gold','#ffb700','255,183,0'],red:['Red Alert','#ff2d3d','255,45,61']};
+function applyTheme(n){const t=THEMES[n]||THEMES.cyan,r=document.documentElement.style;r.setProperty('--primary-color',t[1]);r.setProperty('--pc-rgb',t[2]);localStorage.setItem('jv.theme',THEMES[n]?n:'cyan')}
+function themeSwatches(){const c=localStorage.getItem('jv.theme')||'cyan';
+  return Object.keys(THEMES).map(k=>h('button',{class:'btn',style:`border-color:${THEMES[k][1]};color:${THEMES[k][1]};flex:1;min-width:120px`,onclick:()=>{applyTheme(k);snd('ok');toast('THEME: '+THEMES[k][0].toUpperCase());settingsModal()}},(c===k?'● ':'')+THEMES[k][0]))}
+applyTheme(localStorage.getItem('jv.theme')||'cyan');
+/* ---------- State, vault & offline-first sync ---------- */
+const blank=()=>({t:0,weight:{},sleep:{},steps:{},hw:[],refuel:{},gym:{},exams:[],study:{},run:null,acad:[],pushups:{},targets:{kcal:2800,pro:150,carb:300,fat:80,caf:400}});
+let S=blank(),K='',vault='',ref=null,tm=null,cur=null;
+const enc=new TextEncoder(),hex=b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
+const sha=async s=>hex(await crypto.subtle.digest('SHA-256',enc.encode(s)));
+const DEFAULT_SALT='c7542a0dc13bb51c80e897b4d2e2dc48';
+const getSalt=()=>{let s=localStorage.getItem('jv.salt');if(!s){s=DEFAULT_SALT;localStorage.setItem('jv.salt',s)}return s};
+async function vaultId(pin,salt){
+  const km=await crypto.subtle.importKey('raw',enc.encode(pin),'PBKDF2',false,['deriveBits']);
+  const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:enc.encode('stark-os:'+salt),iterations:200000},km,256);
+  return sha(hex(bits)+':'+salt); // 64-char hex Firestore document id
+}
+const setSync=t=>$('sy').textContent=t;
+const pending=()=>localStorage.getItem('jv.pend')==='1';
+function save(){S.t=Date.now();localStorage.setItem(K,JSON.stringify(S));localStorage.setItem('jv.pend','1');clearTimeout(tm);tm=setTimeout(push,600);render()}
+function push(){
+  if(!ref)return;
+  if(!navigator.onLine){setSync('OFFLINE · QUEUED');return}
+  const t=S.t;
+  ref.set({json:JSON.stringify(S),t}).then(()=>{if(S.t===t)localStorage.setItem('jv.pend','0');setSync('LINKED')},e=>{console.error('[sync] write failed',e);setSync('SYNC ERROR · QUEUED')});
+}
+addEventListener('online',()=>{if(ref){setSync('RECONNECTED');if(pending())push()}});
+addEventListener('offline',()=>{if(ref)setSync(pending()?'OFFLINE · QUEUED':'OFFLINE')});
+function initCloud(){
+  let cfg=null;try{cfg=JSON.parse(localStorage.getItem('jv.fbcfg'))}catch(e){}
+  if(!window.firebase||!cfg||!cfg.apiKey||!cfg.projectId){setSync('LOCAL ONLY');return}
+  try{
+    if(!firebase.apps.length)firebase.initializeApp(cfg);
+    ref=firebase.firestore().collection('vaults').doc(vault);
+    ref.onSnapshot(s=>{
+      if(s.metadata.hasPendingWrites)return;
+      if(s.exists){try{const r={...blank(),...JSON.parse(s.data().json)};
+        if(r.t>S.t){S=r;localStorage.setItem(K,JSON.stringify(S));localStorage.setItem('jv.pend','0');render()}else if(S.t>r.t)push()}catch(e){console.error(e)}}
+      else if(S.t)push();
+      setSync(navigator.onLine?'LINKED':'OFFLINE · QUEUED');
+    },e=>{console.error('[sync] listen failed',e);setSync('SYNC ERROR')});
+    if(pending())push();
+  }catch(e){console.error('[sync] init failed',e);setSync('SYNC ERROR')}
+}
+/* ---------- Passcode ---------- */
+let pin='';
+const drawDots=()=>$('dots').replaceChildren(...[0,1,2,3].map(i=>h('i',{class:i<pin.length?'f':''})));
+['1','2','3','4','5','6','7','8','9','CLR','0','⌫'].forEach(k=>$('keys').append(h('button',{class:'btn',onclick:()=>{hap();snd('key');
+  if(k==='CLR')pin='';else if(k==='⌫')pin=pin.slice(0,-1);else if(pin.length<4)pin+=k;drawDots();if(pin.length===4)unlock()}},k)));
+async function unlock(){
+  const vid=await vaultId(pin,getSalt()),ph=await sha('ph:'+vid),have=localStorage.getItem('jv.ph2');
+  if(have&&have!==ph){snd('warn');$('lt').textContent='ACCESS DENIED';pin='';drawDots();return}
+  localStorage.setItem('jv.ph2',ph);vault=vid;K='jv.'+vid.slice(0,16);
+  const old='jv.'+(await sha('jv-vault:'+pin)).slice(0,16); // migrate data saved before salted vault ids
+  if(!localStorage.getItem(K)&&localStorage.getItem(old))localStorage.setItem(K,localStorage.getItem(old));
+  pin='';try{S={...blank(),...JSON.parse(localStorage.getItem(K))}}catch(e){S=blank()}
+  S.targets={...blank().targets,...S.targets};
+  snd('unlock');$('lock').classList.remove('on');setSync('LOCAL');initCloud();render();toast('ACCESS GRANTED — WELCOME BACK, SIR');
+}
+$('lr').onclick=()=>{if(confirm('Forget the passcode on this device? Local data stays until browser data is cleared.')){localStorage.removeItem('jv.ph2');$('lt').textContent='NEW PASSCODE: ENTER 4 DIGITS'}};
+$('ls').onclick=()=>{const v=(prompt('Paste the vault salt from your other device (Settings > Vault salt):')||'').trim().toLowerCase();
+  if(/^[0-9a-f]{16,64}$/.test(v)){localStorage.setItem('jv.salt',v);localStorage.removeItem('jv.ph2');$('lt').textContent='SALT LINKED — ENTER YOUR PASSCODE'}else if(v)toast('INVALID SALT FORMAT')};
+$('lt').textContent=localStorage.getItem('jv.ph2')?'ENTER 4-DIGIT PASSCODE':'SET A NEW 4-DIGIT PASSCODE';
+drawDots();$('lock').classList.add('on');
+/* ---------- Modal ---------- */
+function modal(title,mk,live=true){cur={mk,live};$('mt').textContent=title;$('mb').replaceChildren(mk());$('modal').classList.add('on')}
+$('mx').onclick=()=>{$('modal').classList.remove('on');cur=null};
+/* ---------- Gemini ---------- */
+const key=()=>localStorage.getItem('gemini_api_key')||localStorage.getItem('jv.key')||'';
+async function gem(parts,json,hist){
+  if(!key()){toast('NO API KEY — OPEN SETTINGS');throw new Error('key')}
+  let last;
+  for(const m of MODELS){
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key()},
+      body:JSON.stringify({contents:[...(hist||[]),{role:'user',parts}],generationConfig:json?{responseMimeType:'application/json'}:{}})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok){
+      const t=j.candidates?.[0]?.content?.parts?.map(p=>p.text).join('')||'';
+      if(!json)return t;
+      try{return JSON.parse(t)}catch(e){console.error('[Gemini] non-JSON reply:',t);throw new Error('Model returned non-JSON: '+t.slice(0,80))}
+    }
+    console.error('[Gemini] request failed',{model:m,status:r.status,body:j});
+    last=new Error(`${r.status} ${j.error?.status||''} ${j.error?.message||'API error'} [${m}]`.replace(/\s+/g,' '));
+    if(r.status!==404)throw last; // only try the next model when this one is missing
+  }
+  throw last;
+}
+const ctx=()=>{const T=today(),st=studyMin(T),rf=(S.refuel[T]||[]);return `Date ${T}. Weight ${S.weight[T]??'n/a'} kg. Sleep ${JSON.stringify(S.sleep[T]||null)}. Steps ${JSON.stringify(S.steps[T]||null)}. Study today ${st} min. Push-ups today ${puTotal(T)}. Calories ${rf.reduce((a,x)=>a+x.kcal,0)} kcal, protein ${rf.reduce((a,x)=>a+x.pro,0)} g. Open homework ${JSON.stringify(S.hw.filter(x=>!x.done).map(x=>({s:x.subj,t:x.title,due:x.due})))}.`};
+/* ---------- Scan terminal (Gemini Vision auto-routing) ---------- */
+const SCAN=`You are the J.A.R.V.I.S. scan router. Today is ${today()}. Classify the input into exactly one module and extract data. Reply ONLY JSON:
+{"type":"refuel|academics|biometrics|exam|homework|unknown",
+"refuel":{"items":[{"name":"","qty":"","kcal":0,"protein":0,"carbs":0,"fat":0,"caffeine":0}]},
+"academics":{"subject":"Physics|Math|Chemistry","problem":"problem statement, LaTeX allowed","steps":[{"label":"Given / Formula / Substitute / Solve …","tex":"one LaTeX line, no $ delimiters"}],"answer":{"tex":"final answer in LaTeX with units"}},
+"biometrics":{"sleep_hours":null,"sleep_quality":"","steps":null,"active_kcal":null,"weight_kg":null,"workout":[{"exercise":"","sets":[{"kg":0,"reps":0}]}]},
+"exam":{"subject":"","score":0,"total":0,"topics":[{"topic":"","correct":0,"wrong":0}]},
+"homework":{"subject":"","title":"","description":"","due":"YYYY-MM-DD or empty"}}
+Rules: food/nutrition/macro labels or meals -> refuel. Physics (kinematics, free fall, projectile motion, dynamics, energy) and math problems or equations -> academics: list the knowns and unknowns, name the governing formula (e.g. v=v_0+at, s=v_0 t+\\tfrac{1}{2}at^2, v^2=v_0^2+2as, g=9.8\\,\\text{m/s}^2), substitute the numbers, then solve step by step with units. Every "tex" value must be valid LaTeX with EVERY backslash doubled (\\\\frac) so the JSON stays valid. Sleep/steps/weight/workout screens -> biometrics (use null for absent fields, exact decimals for weight). Test results/score tables -> exam. Assignment lists with due dates -> homework. Fill only the matching object; keep original-language names.`;
+const MOD={refuel:'REFUEL',academics:'ACADEMICS',biometrics:'BIOMETRICS',exam:'EXAM ANALYTICS',homework:'HOMEWORK'};
+function route(d){
+  const T=today(),n=x=>Number(x)||0,str=(x,m=200)=>String(x??'').slice(0,m);let ok=false;
+  if(d.type==='refuel'&&d.refuel?.items?.length){(S.refuel[T]=S.refuel[T]||[]).push(...d.refuel.items.map(i=>({id:uid(),name:str(i.name||'Item'),qty:str(i.qty,40),kcal:n(i.kcal),pro:n(i.protein),carb:n(i.carbs),fat:n(i.fat),caf:n(i.caffeine)})));ok=true}
+  else if(d.type==='academics'&&d.academics){const a=d.academics,fx=v=>str(v,1500).replace(/\x0c/g,'\\f').replace(/\t/g,'\\t').replace(/\x08/g,'\\b').replace(/\r/g,'\\r'); // repair \f \t \b \r eaten by JSON escapes
+    S.acad.unshift({id:uid(),date:T,subject:str(a.subject||'STEM',60),problem:fx(a.problem||'Problem'),steps:(a.steps||[]).slice(0,30).map(x=>typeof x==='string'?{label:'',tex:fx(x)}:{label:str(x&&x.label,80),tex:fx(x&&x.tex)}),answer:typeof a.answer==='string'?fx(a.answer):fx(a.answer&&a.answer.tex||'')});ok=true}
+  else if(d.type==='biometrics'&&d.biometrics){const b=d.biometrics;
+    if(b.sleep_hours!=null){S.sleep[T]={h:n(b.sleep_hours),q:str(b.sleep_quality)};ok=true}
+    if(b.steps!=null){S.steps[T]={n:n(b.steps),kcal:n(b.active_kcal)};ok=true}
+    if(b.weight_kg!=null&&n(b.weight_kg)>=20&&n(b.weight_kg)<=400){S.weight[T]=n(b.weight_kg);ok=true}
+    if(b.workout?.length){S.gym[T]=[...(S.gym[T]||[]),...b.workout.map(w=>({ex:str(w.exercise||'Exercise',80),sets:(w.sets||[]).map(s=>[n(s.kg),n(s.reps)])}))];ok=true}}
+  else if(d.type==='exam'&&d.exam){const e=d.exam;S.exams.unshift({id:uid(),date:T,subject:str(e.subject||'Exam',60),score:n(e.score),total:n(e.total),topics:(e.topics||[]).map(x=>({t:str(x.topic,80),c:n(x.correct),w:n(x.wrong)}))});ok=true}
+  else if(d.type==='homework'&&d.homework){const x=d.homework;S.hw.unshift({id:uid(),subj:str(x.subject||'Unknown',60),title:str(x.title||'Untitled'),desc:str(x.description,1000),due:str(x.due,10),done:0});ok=true}
+  if(!ok){snd('warn');toast('[J.A.R.V.I.S.] UNRECOGNIZED DATAPOINT');return}
+  snd('ocr');save();toast(`[J.A.R.V.I.S.] DATAPOINT AUTO-ROUTED TO ${MOD[d.type]} MODULE`);
+}
+const DZT='[ UPLOAD SCREENSHOT / SCAN TERMINAL ]';let dzT;
+function dz(msg,busy){clearTimeout(dzT);$('dzt').textContent=msg||DZT;$('drop').classList.remove('err');$('drop').classList.toggle('busy',!!busy)}
+function dzErr(e){snd('warn');console.error('[J.A.R.V.I.S. scan] FAILED:',e);clearTimeout(dzT);$('drop').classList.remove('busy');$('drop').classList.add('err');
+  $('dzt').textContent='ERROR: '+String(e&&e.message||e).slice(0,160);dzT=setTimeout(()=>dz(),9000)}
+async function scan(parts,label='IMAGE'){
+  if(!K){toast('UNLOCK THE VAULT FIRST');dz();return}
+  if(!key()){toast('NO API KEY — OPEN SETTINGS');dz();return}
+  dz(`J.A.R.V.I.S. PARSING ${label}...`,1);
+  try{route(await gem([{text:SCAN},...parts],true));dz()}
+  catch(e){if(e.message!=='key')dzErr(e);else dz()}
+}
+// File -> {mimeType,data}: header prefix stripped, big screenshots downscaled to JPEG, original bytes used if decoding fails.
+async function encodeImage(file){
+  const dataUrl=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error||new Error('FileReader failed'));r.readAsDataURL(file)});
+  const rawBase64=String(dataUrl),base64Data=rawBase64.replace(/^data:[^,]*;base64,/,'');
+  try{
+    const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error('browser could not decode this image'));i.src=rawBase64});
+    const k=Math.min(1,1600/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);
+    c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+    return{mimeType:'image/jpeg',data:c.toDataURL('image/jpeg',.85).replace(/^data:image\/\w+;base64,/,'')};
+  }catch(e){
+    console.error('[scan] canvas re-encode failed, sending original bytes instead:',e);
+    const t=file.type==='image/jpg'?'image/jpeg':(file.type||'');
+    if(/^image\/(png|jpeg|webp|heic|heif)$/.test(t))return{mimeType:t,data:base64Data};
+    throw new Error(`unsupported image type "${t||'unknown'}" — use PNG or JPEG`);
+  }
+}
+async function onFile(f){
+  if(!f)return;
+  if(!/^image\//.test(f.type)){toast('IMAGE FILES ONLY');return}
+  if(!K||!key()){await scan([]);return} // shows the right warning without encoding
+  dz('J.A.R.V.I.S. ENCODING IMAGE...',1);
+  try{const {mimeType,data}=await encodeImage(f);await scan([{inlineData:{mimeType,data}}])}
+  catch(e){dzErr(e)}
+}
+$('file').onchange=e=>{const f=e.target.files[0];e.target.value='';onFile(f)};
+const dzEl=$('drop');
+['dragenter','dragover'].forEach(ev=>dzEl.addEventListener(ev,e=>{e.preventDefault();dzEl.classList.add('over')}));
+['dragleave','drop'].forEach(ev=>dzEl.addEventListener(ev,e=>{e.preventDefault();dzEl.classList.remove('over');if(ev==='drop')onFile(e.dataTransfer&&e.dataTransfer.files[0])}));
+['dragover','drop'].forEach(ev=>window.addEventListener(ev,e=>e.preventDefault())); // stop the browser opening dropped files
+/* ---------- Study (stopwatch + retroactive edit) ---------- */
+const sess=d=>S.study[d]||[];
+const studyMin=d=>Math.round(sess(d).reduce((a,s)=>a+(s.e-s.s),0)/6e4);
+const runMin=()=>S.run?Math.floor((Date.now()-S.run)/6e4):0;
+const clk=ms=>{const s=Math.floor(ms/1e3);return `${pad(Math.floor(s/3600))}:${pad(Math.floor(s%3600/60))}:${pad(s%60)}`};
+function addSess(s,e){if(e<=s){toast('END MUST BE AFTER START');return}const d=dk(new Date(s));(S.study[d]=S.study[d]||[]).push({id:uid(),s,e});save()}
+function studyModal(){modal('STUDY CHRONOMETER',()=>{
+  const T=today(),st=h('input',{type:'time'}),en=h('input',{type:'time'}),mn=h('input',{type:'text',inputmode:'numeric',placeholder:'Total minutes'});
+  return h('div',{},
+    h('div',{class:'big',id:'stm'},S.run?clk(Date.now()-S.run):'00:00:00'),
+    h('div',{class:'row'},h('button',{class:'btn '+(S.run?'rd':''),onclick:()=>{hap();if(S.run){addSess(S.run,Date.now());S.run=null;save()}else{S.run=Date.now();save()}}},S.run?'STOP SESSION':'START SESSION')),
+    h('div',{class:'sub',style:'margin-top:16px'},'RETROACTIVE ENTRY (forgot to start?)'),
+    h('div',{class:'row'},h('label',{class:'mu'},'Start',st),h('label',{class:'mu'},'End',en)),
+    h('div',{class:'row'},mn,h('button',{class:'btn am',onclick:()=>{
+      const m=num(mn.value);let s,e;
+      if(st.value&&en.value){s=tsOf(T,st.value);e=tsOf(T,en.value)}
+      else if(m>0&&st.value){s=tsOf(T,st.value);e=s+m*6e4}
+      else if(m>0&&en.value){e=tsOf(T,en.value);s=e-m*6e4}
+      else if(m>0){e=Date.now();s=e-m*6e4}else{toast('ENTER START+END OR MINUTES');return}
+      addSess(s,e)}},'LOG SESSION')),
+    h('div',{class:'sub',style:'margin-top:16px'},`TODAY: ${studyMin(T)} MIN`),
+    sess(T).map(x=>{const a=h('input',{type:'time',value:tt(x.s)}),b=h('input',{type:'time',value:tt(x.e)});
+      return h('div',{class:'li'},a,b,h('button',{class:'btn',onclick:()=>{const d=dk(new Date(x.s)),s=tsOf(d,a.value),e=tsOf(d,b.value);if(e<=s){toast('END MUST BE AFTER START');return}x.s=s;x.e=e;save();toast('SESSION UPDATED')}},'SAVE'),
+        h('button',{class:'btn rd',onclick:()=>{S.study[T]=sess(T).filter(y=>y.id!==x.id);save()}},'DEL'))}))})}
+/* ---------- Weight (exact decimals) ---------- */
+function weightModal(){modal('MASS TELEMETRY',()=>{
+  const T=today(),inp=h('input',{type:'text',inputmode:'decimal',placeholder:'60.45',value:S.weight[T]??''});
+  const base=()=>{const v=num(inp.value);if(v!==null)return v;const ks=Object.keys(S.weight).sort();return ks.length?S.weight[ks[ks.length-1]]:null};
+  const set=v=>{S.weight[T]=v;save()};
+  return h('div',{},h('div',{class:'big'},S.weight[T]!=null?S.weight[T]+' kg':'-- kg'),inp,
+    h('div',{class:'row'},[-0.5,-0.1,-0.05,0.05,0.1,0.5].map(d=>h('button',{class:'btn',onclick:()=>{hap();const b=base();if(b===null){toast('ENTER A WEIGHT FIRST');return}set(Number((b+d).toFixed(2)))}},(d>0?'+':'')+d))),
+    h('div',{class:'row'},h('button',{class:'btn am',onclick:()=>{const v=num(inp.value);if(v===null||v<20||v>400){toast('INVALID MASS VALUE');return}set(v)}},'COMMIT')),
+    Object.keys(S.weight).sort().slice(-7).reverse().map(d=>h('div',{class:'li'},h('span',{class:'mu'},d),h('span',{},S.weight[d]+' kg'))))})}
+/* ---------- Sleep / Steps ---------- */
+function simpleModal(title,fields,get,put){modal(title,()=>{const cur=get()||{},ins=fields.map(f=>h('input',{type:'text',placeholder:f[1],value:cur[f[0]]??'',inputmode:f[2]?'decimal':'text'}));
+  return h('div',{},ins.map(i=>h('div',{class:'row'},i)),h('div',{class:'row'},h('button',{class:'btn am',onclick:()=>{const o={};fields.forEach((f,i)=>o[f[0]]=f[2]?(num(ins[i].value)??0):ins[i].value);put(o);save();toast('LOGGED')}},'COMMIT')))})}
+const sleepModal=()=>simpleModal('SLEEP DIAGNOSTICS',[['h','Sleep duration (hours)',1],['q','Quality breakdown (deep / REM / awake…)']],()=>S.sleep[today()],o=>S.sleep[today()]=o);
+const stepsModal=()=>simpleModal('ACTIVITY MATRIX',[['n','Total steps',1],['kcal','Active calories (kcal)',1]],()=>S.steps[today()],o=>S.steps[today()]=o);
+/* ---------- Refuel (macros vs daily targets) ---------- */
+const TG=()=>({...blank().targets,...S.targets});
+function refuelModal(){modal('REFUEL TERMINAL',()=>{
+  const T=today(),L=S.refuel[T]||[],tg=TG(),sum=k=>L.reduce((a,x)=>a+(x[k]||0),0);
+  const M=[['kcal','Calories','kcal'],['pro','Protein','g'],['carb','Carbs','g'],['fat','Fat','g'],['caf','Caffeine','mg']];
+  const f=['Food item','Quantity (g)','kcal','Protein g','Carbs g','Fat g','Caffeine mg'].map((p,i)=>h('input',{type:'text',placeholder:p,inputmode:i>1?'decimal':'text'}));
+  return h('div',{},
+    M.map(([k,l,u])=>{const used=Math.round(sum(k)),left=Math.round(tg[k]-used);
+      return h('div',{class:'li'},h('span',{},l),h('span',{style:'color:'+(left<0?'var(--rd)':'var(--cy)')},`${used} / ${tg[k]} ${u} · ${left>=0?left+' left':(-left)+' over'}`))}),
+    h('div',{class:'row'},f[0],f[1]),h('div',{class:'row'},f[2],f[3]),h('div',{class:'row'},f[4],f[5],f[6]),
+    h('div',{class:'row'},h('button',{class:'btn am',onclick:()=>{if(!f[0].value.trim()){toast('FOOD ITEM REQUIRED');return}
+      (S.refuel[T]=S.refuel[T]||[]).push({id:uid(),name:f[0].value.trim(),qty:f[1].value.trim(),kcal:num(f[2].value)||0,pro:num(f[3].value)||0,carb:num(f[4].value)||0,fat:num(f[5].value)||0,caf:num(f[6].value)||0});save()}},'ADD')),
+    L.map(x=>h('div',{class:'li'},h('span',{},`${x.name} ${x.qty?'('+x.qty+')':''}`),h('span',{class:'mu',style:'font-size:12px'},`${x.kcal} kcal · P${x.pro} C${x.carb||0} F${x.fat||0}${x.caf?' · '+x.caf+'mg':''}`),
+      h('button',{class:'btn rd',onclick:()=>{S.refuel[T]=L.filter(y=>y.id!==x.id);save()}},'DEL'))))})}
+/* ---------- LaTeX -> readable Unicode math (offline; no external renderer needed) ---------- */
+const GK={alpha:'α',beta:'β',gamma:'γ',delta:'δ',Delta:'Δ',epsilon:'ε',theta:'θ',lambda:'λ',mu:'μ',pi:'π',rho:'ρ',sigma:'σ',Sigma:'Σ',tau:'τ',phi:'φ',Phi:'Φ',omega:'ω',Omega:'Ω',eta:'η',cdot:'·',times:'×',approx:'≈',neq:'≠',leq:'≤',geq:'≥',le:'≤',ge:'≥',pm:'±',to:'→',rightarrow:'→',Rightarrow:'⇒',infty:'∞',circ:'°',degree:'°',partial:'∂',nabla:'∇',int:'∫',sum:'Σ',therefore:'∴',vec:'',sin:'sin',cos:'cos',tan:'tan',ln:'ln',log:'log'};
+const SUPM='0123456789+-=()ni',SUPC='⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ',SUBM='0123456789+-=()aeoxint',SUBC='₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₒₓᵢₙₜ';
+const conv=(s,from,to,pre)=>{let o='';for(const c of s){const i=from.indexOf(c);if(i<0)return pre+'('+s+')';o+=to[i]}return o};
+function tex2txt(s){
+  s=String(s||'').replace(/\\(?:left|right|displaystyle|!)/g,'').replace(/\\(?:quad|qquad|,|;|:)/g,' ').replace(/\\(?:text|mathrm|mathbf|textbf|operatorname)\{([^{}]*)\}/g,'$1');
+  const FR={'1/2':'½','1/3':'⅓','2/3':'⅔','1/4':'¼','3/4':'¾'},w=x=>/^[\w.]+$/.test(x)?x:'('+x+')';
+  for(let i=0;i<8;i++){const p=s;
+    s=s.replace(/\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}/g,(m,a,b)=>FR[a+'/'+b]||(w(a)+'/'+w(b)))
+      .replace(/\\sqrt\{([^{}]*)\}/g,(m,a)=>'√'+w(a))
+      .replace(/\^\{([^{}]*)\}/g,(m,a)=>conv(a,SUPM,SUPC,'^')).replace(/_\{([^{}]*)\}/g,(m,a)=>conv(a,SUBM,SUBC,'_'))
+      .replace(/\^([0-9a-zA-Z+-])/g,(m,a)=>conv(a,SUPM,SUPC,'^')).replace(/_([0-9a-zA-Z])/g,(m,a)=>conv(a,SUBM,SUBC,'_'));
+    if(s===p)break}
+  return s.replace(/\\\\/g,'\n').replace(/\\([a-zA-Z]+)/g,(m,k)=>k in GK?GK[k]:k).replace(/[{}]/g,'').replace(/[ \t]{2,}/g,' ').trim();
+}
+/* ---------- Academic terminal (physics / math solutions in LaTeX) ---------- */
+function acadDetail(x){modal('SOLUTION LOG',()=>{
+  const raws=[],R=t=>{const e=h('div',{class:'raw',style:'display:none'},t);raws.push(e);return e};
+  const ans=typeof x.answer==='string'?x.answer:'';
+  const steps=x.steps.map((s,i)=>{const o=typeof s==='string'?{label:'',tex:s}:s;return h('div',{class:'msg'},h('div',{class:'sub'},`STEP ${i+1}${o.label?' · '+o.label:''}`),h('div',{class:'tex'},tex2txt(o.tex)),R(o.tex))});
+  return h('div',{},h('div',{class:'sub'},x.subject+' · '+x.date),h('div',{class:'msg'},h('div',{class:'tex'},tex2txt(x.problem)),R(x.problem)),steps,
+    h('div',{class:'msg',style:'border-color:var(--am)'},h('div',{class:'sub'},'ANSWER'),h('div',{class:'tex',style:'color:var(--am)'},tex2txt(ans)||'—'),R(ans)),
+    h('div',{class:'row'},h('button',{class:'btn',onclick:acadModal},'BACK'),
+      h('button',{class:'btn',onclick:e=>{const show=raws[0]&&raws[0].style.display==='none';raws.forEach(r=>r.style.display=show?'block':'none');e.target.textContent=show?'HIDE LaTeX':'SHOW LaTeX'}},'SHOW LaTeX'),
+      h('button',{class:'btn rd',onclick:()=>{S.acad=S.acad.filter(y=>y.id!==x.id);save();acadModal()}},'DELETE')))},false)}
+function acadModal(){modal('ACADEMIC TERMINAL',()=>{
+  const ta=h('textarea',{rows:3,placeholder:'Type a physics or math problem — or drop a screenshot on the scan terminal'});
+  return h('div',{},ta,h('div',{class:'row'},h('button',{class:'btn am',onclick:async()=>{if(!ta.value.trim())return;await scan([{text:'Solve this physics or math problem step by step (LaTeX steps) and route it to academics:\n'+ta.value}],'PROBLEM');ta.value=''}},'SOLVE & LOG')),
+    S.acad.map(x=>h('button',{class:'li',style:'width:100%;text-align:left',onclick:()=>acadDetail(x)},h('span',{},`${x.subject} — ${tex2txt(x.problem).slice(0,56)}`),h('span',{class:'mu'},x.date))))})}
+/* ---------- Push-up volume ---------- */
+const puList=d=>S.pushups[d]||[],puTotal=d=>puList(d).reduce((a,x)=>a+x.n,0);
+function addPU(n){const T=today();(S.pushups[T]=S.pushups[T]||[]).push({id:uid(),t:Date.now(),n});save();snd('ok');hap();toast(`+${n} PUSH-UPS · TOTAL ${puTotal(T)}`)}
+function pushupModal(){modal('PUSH-UP VOLUME',()=>{
+  const T=today(),c=h('input',{type:'text',inputmode:'numeric',placeholder:'Custom reps'});
+  const wk=[...Array(7)].map((_,i)=>{const d=new Date();d.setDate(d.getDate()-6+i);return dk(d)});
+  return h('div',{},h('div',{class:'big'},puTotal(T)+' REPS'),
+    h('div',{class:'row'},[10,20,25].map(n=>h('button',{class:'btn am',style:'flex:1;min-height:56px;font-size:16px',onclick:()=>addPU(n)},'+'+n))),
+    h('div',{class:'row'},c,h('button',{class:'btn',onclick:()=>{const n=Math.round(num(c.value));if(!(n>0&&n<=1000)){toast('ENTER 1–1000');return}addPU(n)}},'ADD')),
+    h('div',{class:'sub',style:'margin-top:14px'},`TODAY · ${puList(T).length} SETS`),
+    puList(T).slice().reverse().map(x=>h('div',{class:'li'},h('span',{},tt(x.t)),h('span',{},'+'+x.n),h('button',{class:'btn rd',onclick:()=>{S.pushups[T]=puList(T).filter(y=>y.id!==x.id);save()}},'DEL'))),
+    h('div',{class:'sub',style:'margin-top:14px'},'LAST 7 DAYS'),
+    wk.map(d=>h('div',{class:'li'},h('span',{class:'mu'},d),h('span',{},puTotal(d)+' reps'))))})}
+/* ---------- Chat terminal (text-to-text, gemini-3.5-flash-lite) ---------- */
+let tchat=[];
+function chatModal(){modal('CHAT TERMINAL // '+MODELS[0].toUpperCase(),()=>{
+  const log=h('div',{}),inp=h('input',{type:'text',placeholder:'Ask anything: Q&A, analysis, explanations…',enterkeyhint:'send'});
+  const add=(c,t)=>{const e=h('div',{class:'msg '+(c||'')},t);log.append(e);log.scrollTop=log.scrollHeight;return e};
+  tchat.forEach(m=>add(m.role==='user'?'u':'',m.parts[0].text));
+  if(!tchat.length)add('','Chat terminal online. Ask me anything, sir.');
+  const go=async()=>{const q=inp.value.trim();if(!q)return;inp.value='';add('u',q);const wait=add('mu','…');
+    try{const sys=`You are J.A.R.V.I.S., a precise, dry-witted assistant. Answer clearly and concisely in English; use plain text. Today's telemetry: ${ctx()}`;
+      const r=await gem([{text:q}],false,[{role:'user',parts:[{text:sys}]},{role:'model',parts:[{text:'Understood.'}]},...tchat.slice(-12)]);
+      tchat.push({role:'user',parts:[{text:q}]},{role:'model',parts:[{text:r}]});wait.className='msg';wait.textContent=r;speak(r);log.scrollTop=log.scrollHeight}
+    catch(e){snd('warn');wait.className='msg';wait.textContent='Systems fault: '+e.message}};
+  inp.onkeydown=e=>{if(e.key==='Enter')go()};
+  return h('div',{},h('div',{class:'row'},tglVoice(),h('button',{class:'btn rd',onclick:()=>{tchat=[];chatModal()}},'CLEAR')),log,h('div',{class:'row'},inp,h('button',{class:'btn',onclick:go},'SEND')))},false)}
+/* ---------- Homework ---------- */
+function hwDetail(x){modal('MISSION BRIEFING',()=>h('div',{},h('div',{class:'sub'},x.subj),h('div',{style:'font-size:18px;color:var(--cy);margin:6px 0'},x.title),h('div',{class:'msg'},x.desc||'No description.'),h('div',{class:'mu',style:'margin-top:8px'},'Due: '+(x.due||'unspecified')),
+  h('div',{class:'row'},h('button',{class:'btn',onclick:()=>{x.done=x.done?0:1;save();hwModal()}},x.done?'REOPEN':'MARK COMPLETE'),h('button',{class:'btn rd',onclick:()=>{S.hw=S.hw.filter(y=>y.id!==x.id);save();hwModal()}},'DELETE'))),false)}
+function hwModal(){modal('HOMEWORK QUEUE',()=>{
+  const f=['Subject','Title','Description'].map(p=>h('input',{type:'text',placeholder:p})),d=h('input',{type:'date'});
+  return h('div',{},f.map(i=>h('div',{class:'row'},i)),h('div',{class:'row'},d,h('button',{class:'btn am',onclick:()=>{if(!f[1].value.trim()){toast('TITLE REQUIRED');return}S.hw.unshift({id:uid(),subj:f[0].value.trim()||'General',title:f[1].value.trim(),desc:f[2].value.trim(),due:d.value,done:0});save()}},'ADD')),
+    [...S.hw].sort((a,b)=>a.done-b.done||(a.due||'9').localeCompare(b.due||'9')).map(x=>h('button',{class:'li',style:'width:100%;text-align:left;opacity:'+(x.done?.45:1),onclick:()=>hwDetail(x)},h('span',{},`${x.done?'✓ ':''}${x.subj} — ${x.title}`),h('span',{class:'mu'},x.due||''))))})}
+/* ---------- Gym log + Strength recap ---------- */
+const SR=/(\d+(?:[.,]\d+)?)\s*(?:kg|kilo)?\s*(?:[x×*@]|for)\s*(\d+)|(\d+)\s*reps?\b/gi;
+function pw(raw){const o=[];raw.split(/\n/).forEach(l=>{l=l.replace(/\s*[(\[][^)\]]*[)\]]/g,' ').trim();const m=[...l.matchAll(SR)];if(!m.length)return;
+  const n=l.slice(0,m[0].index).replace(/\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|set)\b[:\s-]*/gi,' ').replace(/\s+/g,' ').replace(/^[\s\-–•*]+|[\s:,\-–]+$/g,'');
+  o.push({ex:n||'Exercise',sets:m.map(x=>x[1]!=null?[parseFloat(x[1].replace(',','.')),+x[2]]:[0,+x[3]])})});return o}
+const fm=s=>s[0]?`${s[0]} kg × ${s[1]}`:`BW × ${s[1]}`;
+const topSet=sets=>sets.reduce((a,s)=>s[0]>a[0]||(s[0]===a[0]&&s[1]>a[1])?s:a,[-1,0]);
+function gymModal(){modal('HYPERTROPHY LOG',()=>{const T=today(),ta=h('textarea',{rows:7,placeholder:'Paste workout notes… e.g. leg press first 140kgx10 second 160kgx8',value:(S.gym[T]||[]).map(e=>e.ex+' '+e.sets.map(s=>s[0]?s[0]+'kgx'+s[1]:s[1]+' reps').join(' ')).join('\n')});
+  return h('div',{},ta,h('div',{class:'row'},h('button',{class:'btn am',onclick:()=>{const p=pw(ta.value);if(p.length)S.gym[T]=p;else delete S.gym[T];save();toast(p.length?`${p.length} EXERCISES LOGGED`:'LOG CLEARED')}},'COMMIT'),h('button',{class:'btn',onclick:recapModal},'WEEKLY RECAP')),
+    (S.gym[T]||[]).map(e=>h('div',{class:'li'},h('span',{},e.ex),h('span',{class:'mu'},e.sets.map(fm).join(' · ')))))})}
+function recapModal(){modal('WEEKLY STRENGTH & HYPERTROPHY RECAP',()=>{
+  const n=new Date(),ws=dk(new Date(n.getFullYear(),n.getMonth(),n.getDate()-((n.getDay()+6)%7))),by={};
+  Object.keys(S.gym).sort().forEach(d=>S.gym[d].forEach(e=>{const k=e.ex.toLowerCase();(by[k]=by[k]||[]).push({d,name:e.ex,t:topSet(e.sets)})}));
+  const rows=Object.values(by).filter(a=>a[a.length-1].d>=ws).map(a=>{const l=a[a.length-1],p=a[a.length-2];return h('div',{class:'li'},h('span',{},l.name),h('span',{style:'color:var(--cy)'},(p?fm(p.t)+' ➔ ':'')+fm(l.t)))});
+  return h('div',{},h('div',{class:'sub'},'TOP SET PER EXERCISE · PREVIOUS ➔ LATEST'),rows.length?rows:h('div',{class:'mu',style:'margin-top:10px'},'No workouts logged this week.'))})}
+/* ---------- Academic diagnostics ---------- */
+function examStats(){const a={};let c=0,w=0;S.exams.forEach(e=>e.topics.forEach(t=>{const k=(e.subject+' / '+t.t);a[k]=a[k]||{c:0,w:0};a[k].c+=t.c;a[k].w+=t.w;c+=t.c;w+=t.w}));
+  return{overall:c+w?Math.round(c/(c+w)*100):null,rows:Object.entries(a).map(([k,v])=>({k,acc:v.c+v.w?Math.round(v.c/(v.c+v.w)*100):0,n:v.c+v.w})).sort((x,y)=>x.acc-y.acc)}}
+function examModal(){modal('ACADEMIC DIAGNOSTICS // 11TH GRADE',()=>{
+  const st=examStats(),ta=h('textarea',{rows:4,placeholder:'Paste practice-exam results as text (or use the scan terminal for screenshots)'}),out=h('pre',{class:'msg',style:'display:none'});
+  return h('div',{},h('div',{class:'big'},st.overall!=null?st.overall+'% ACCURACY':'NO DATA'),
+    st.rows.slice(0,12).map(r=>h('div',{class:'li'},h('span',{},r.k),h('span',{style:'color:'+(r.acc<60?'var(--rd)':r.acc<80?'var(--am)':'var(--cy)')},`${r.acc}% (${r.n}q)`))),
+    ta,h('div',{class:'row'},h('button',{class:'btn',onclick:async()=>{if(!ta.value.trim())return;await scan([{text:'Exam results text:\n'+ta.value}],'INPUT');ta.value=''}},'PARSE TEXT'),
+      h('button',{class:'btn am',onclick:async()=>{if(!st.rows.length){toast('NO EXAM DATA YET');return}out.style.display='block';out.textContent='ANALYZING…';
+        try{out.textContent=await gem([{text:`You are J.A.R.V.I.S., academic strategist for an 11th grade student. Exam stats (topic accuracy, weakest first): ${JSON.stringify(st.rows.slice(0,15))}. Overall ${st.overall}%. Identify the top vulnerabilities, then give a concrete 7-day study roadmap (daily focus + task + minutes). Plain text, concise, English.`}])}catch(e){out.textContent='ERROR: '+e.message}}},'GENERATE ROADMAP')),out)},false)}
+/* ---------- J.A.R.V.I.S. command terminal (chat + whitelisted system actions) ---------- */
+let chat=[];
+const MODS={study:()=>studyModal(),weight:()=>weightModal(),refuel:()=>refuelModal(),homework:()=>hwModal(),academics:()=>acadModal(),exams:()=>examModal(),strength:()=>recapModal(),pushups:()=>pushupModal(),chat:()=>chatModal()};
+const JP=`You are J.A.R.V.I.S. from Stark Industries: precise, dry-witted, concise, always English. Reply ONLY JSON: {"reply":"text","actions":[]}.
+Allowed actions (use only when the user clearly asks to change data, otherwise actions must be []):
+{"type":"add_homework","subject":"","title":"","description":"","due":"YYYY-MM-DD"}
+{"type":"log_weight","kg":60.45}
+{"type":"add_food","name":"","qty":"","kcal":0,"protein":0,"carbs":0,"fat":0,"caffeine":0}
+{"type":"start_study"} {"type":"stop_study"} {"type":"log_study","minutes":45}
+{"type":"set_targets","kcal":0,"protein":0,"carbs":0,"fat":0,"caffeine":0}
+{"type":"add_pushups","reps":20}
+{"type":"open","module":"study|weight|refuel|homework|academics|exams|strength|pushups|chat"}`;
+function act(a){
+  const T=today(),n=x=>Number(x)||0,str=(x,m=200)=>String(x??'').slice(0,m);
+  switch(a.type){
+    case'add_homework':S.hw.unshift({id:uid(),subj:str(a.subject||'General',60),title:str(a.title||'Task'),desc:str(a.description,1000),due:/^\d{4}-\d\d-\d\d$/.test(a.due||'')?a.due:'',done:0});return'HOMEWORK QUEUED: '+str(a.title,60);
+    case'log_weight':{const k=n(a.kg);if(k<20||k>400)return null;S.weight[T]=k;return`MASS LOGGED: ${k} kg`}
+    case'add_food':(S.refuel[T]=S.refuel[T]||[]).push({id:uid(),name:str(a.name||'Item',80),qty:str(a.qty,40),kcal:n(a.kcal),pro:n(a.protein),carb:n(a.carbs),fat:n(a.fat),caf:n(a.caffeine)});return'FUEL LOGGED: '+str(a.name,60);
+    case'start_study':if(S.run)return null;S.run=Date.now();return'CHRONOMETER STARTED';
+    case'stop_study':if(!S.run)return null;addSess(S.run,Date.now());S.run=null;return'CHRONOMETER STOPPED';
+    case'log_study':{const m=n(a.minutes);if(m<=0||m>720)return null;addSess(Date.now()-m*6e4,Date.now());return`STUDY SESSION LOGGED: ${m} min`}
+    case'set_targets':S.targets={kcal:n(a.kcal)||TG().kcal,pro:n(a.protein)||TG().pro,carb:n(a.carbs)||TG().carb,fat:n(a.fat)||TG().fat,caf:n(a.caffeine)||TG().caf};return'DAILY TARGETS UPDATED';
+    case'add_pushups':{const r=Math.round(n(a.reps));if(r<=0||r>1000)return null;(S.pushups[T]=S.pushups[T]||[]).push({id:uid(),t:Date.now(),n:r});return`PUSH-UPS LOGGED: ${r}`}
+    case'open':if(MODS[a.module]){setTimeout(MODS[a.module],0);return'OPENING '+String(a.module).toUpperCase()}return null;
+  }
+  return null;
+}
+function jarvisModal(){modal('J.A.R.V.I.S. COMMAND TERMINAL',()=>{
+  const log=h('div',{}),inp=h('input',{type:'text',placeholder:'Command or question… e.g. "log weight 60.45" / "add physics homework due Friday"',enterkeyhint:'send'});
+  const add=(c,t)=>{log.append(h('div',{class:'msg '+(c||'')},t));log.scrollTop=log.scrollHeight};
+  chat.forEach(m=>add(m.u?'u':'',m.t));if(!chat.length)add('','At your service, sir. Ask me anything, or give me a command: I can log weight, food, study time, homework and open any module.');
+  const go=async()=>{const q=inp.value.trim();if(!q)return;inp.value='';chat.push({u:1,t:q});add('u',q);
+    try{const r=await gem([{text:`${JP}\nContext: ${ctx()}\nRecent chat: ${chat.slice(-6).map(m=>(m.u?'User: ':'JARVIS: ')+m.t).join('\n')}\nUser: ${q}`}],true);
+      const reply=String(r.reply||'Done.');chat.push({t:reply});add('',reply);speak(reply);
+      const done=(Array.isArray(r.actions)?r.actions.slice(0,5):[]).map(a=>{try{return act(a||{})}catch(e){return null}}).filter(Boolean);
+      done.forEach(d=>add('','> EXECUTED: '+d));if(done.length){snd('ok');if(done.some(d=>!d.startsWith('OPENING')))save()}}
+    catch(e){snd('warn');add('','Systems fault: '+e.message)}};
+  inp.onkeydown=e=>{if(e.key==='Enter')go()};
+  return h('div',{},h('div',{class:'row'},tglVoice()),log,h('div',{class:'row'},inp,h('button',{class:'btn',onclick:go},'TRANSMIT')))},false)}
+/* ---------- Settings ---------- */
+function parseFbConfig(txt){ // accepts raw JSON or the "const firebaseConfig = {...}" snippet from the console
+  try{const o=JSON.parse(txt);if(o&&o.apiKey&&o.projectId)return o}catch(e){}
+  const o={};for(const m of txt.matchAll(/["']?(\w+)["']?\s*:\s*["']([^"']+)["']/g))o[m[1]]=m[2];
+  return o.apiKey&&o.projectId?o:null;
+}
+function settingsModal(){modal('SYSTEM CONFIG',()=>{
+  const k=h('input',{type:'password',placeholder:'Gemini API key (stored in this browser only)',value:key()});
+  const fb=h('textarea',{rows:6,placeholder:'Paste Firebase webConfig, e.g. { "apiKey": "...", "authDomain": "...", "projectId": "...", "appId": "..." }',value:localStorage.getItem('jv.fbcfg')||''});
+  const t=TG(),tg=h('input',{type:'text',value:[t.kcal,t.pro,t.carb,t.fat,t.caf].join(',')});
+  const salt=h('input',{type:'text',readonly:'readonly',value:getSalt()});
+  return h('div',{},
+    h('div',{class:'sub'},'GEMINI API KEY'),k,
+    h('div',{class:'row'},h('button',{class:'btn am',onclick:()=>{localStorage.setItem('gemini_api_key',k.value.trim());localStorage.removeItem('jv.key');toast('API KEY STORED LOCALLY')}},'SAVE KEY'),
+      h('button',{class:'btn',onclick:e=>{k.type=k.type==='password'?'text':'password';e.target.textContent=k.type==='password'?'SHOW':'HIDE'}},'SHOW'),
+      h('button',{class:'btn rd',onclick:()=>{localStorage.removeItem('gemini_api_key');localStorage.removeItem('jv.key');k.value='';toast('KEY ERASED')}},'ERASE')),
+    h('div',{class:'sub',style:'margin-top:16px'},'FIREBASE CLOUD SYNC · webConfig'),fb,
+    h('div',{class:'row'},h('button',{class:'btn am',onclick:()=>{const c=parseFbConfig(fb.value);if(!c){toast('CONFIG NEEDS apiKey AND projectId');return}
+      localStorage.setItem('jv.fbcfg',JSON.stringify(c));toast('FIREBASE CONFIG STORED — RELOADING');setTimeout(()=>location.reload(),900)}},'SAVE & LINK'),
+      h('button',{class:'btn rd',onclick:()=>{localStorage.removeItem('jv.fbcfg');toast('CLOUD LINK REMOVED — RELOADING');setTimeout(()=>location.reload(),900)}},'UNLINK')),
+    h('div',{class:'mu',style:'font-size:12px;margin-top:6px'},'Status: '+$('sy').textContent),
+    h('div',{class:'sub',style:'margin-top:16px'},'VAULT SALT (SECRET — copy to link another device)'),salt,
+    h('div',{class:'row'},h('button',{class:'btn',onclick:()=>{navigator.clipboard&&navigator.clipboard.writeText(salt.value).then(()=>toast('SALT COPIED'),()=>toast('COPY FAILED'))}},'COPY SALT')),
+    h('div',{class:'sub',style:'margin-top:16px'},'DAILY TARGETS · kcal, protein, carbs, fat, caffeine'),tg,
+    h('div',{class:'row'},h('button',{class:'btn am',onclick:()=>{const v=tg.value.split(',').map(num);if(v.length!==5||v.some(x=>x===null||x<0)){toast('NEED 5 NUMBERS');return}
+      S.targets={kcal:v[0],pro:v[1],carb:v[2],fat:v[3],caf:v[4]};save();toast('TARGETS SAVED')}},'SAVE TARGETS'),
+      h('button',{class:'btn',onclick:e=>{const m=localStorage.getItem('jv.mute')==='1';localStorage.setItem('jv.mute',m?'0':'1');e.target.textContent=m?'SOUND: ON':'SOUND: OFF';if(m)snd('ok')}},localStorage.getItem('jv.mute')==='1'?'SOUND: OFF':'SOUND: ON'),
+      h('button',{class:'btn',onclick:exportBackup},'EXPORT BACKUP (.JSON)'),h('button',{class:'btn',onclick:()=>$('bkf').click()},'RESTORE BACKUP'),tglVoice()),h('div',{class:'sub',style:'margin-top:16px'},'THEME'),h('div',{class:'row'},themeSwatches()))},false)}
+/* ---------- Vault backup (export / restore) ---------- */
+function exportBackup(){
+  const o={app:'stark-os',version:2,exported:new Date().toISOString(),data:S};
+  const a=h('a',{href:URL.createObjectURL(new Blob([JSON.stringify(o,null,2)],{type:'application/json'})),download:`stark-os-backup-${today()}.json`});
+  document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);toast('BACKUP EXPORTED (API key, salt and Firebase config are not included)');
+}
+$('bkf').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{
+    const j=JSON.parse(await f.text()),d=j&&j.data&&typeof j.data==='object'?j.data:j;
+    if(!d||typeof d!=='object'||Array.isArray(d)||!['weight','hw','refuel','study','gym'].some(k=>k in d))throw new Error('not a stark-os backup');
+    if(!confirm('Replace ALL data in this vault with the backup?'))return;
+    const b=blank(),n={};for(const k in b)n[k]=(k in d&&typeof d[k]===typeof b[k]&&Array.isArray(d[k])===Array.isArray(b[k]))?d[k]:b[k]; // keep known keys with the right type only
+    n.run=null;n.targets={...b.targets,...n.targets};S=n;save();snd('ok');toast('VAULT RESTORED');
+  }catch(err){console.error('[restore]',err);snd('warn');toast('RESTORE FAILED: '+String(err.message).slice(0,50))}
+};
+/* ---------- Dashboard ---------- */
+function render(){
+  if(!K)return;const T=today(),L=S.refuel[T]||[];
+  const C=(t,v,f,am,id,x)=>h('button',{class:'card'+(am?' am':''),onclick:()=>{hap();f()}},h('span',{class:'sub'},t),h('b',id?{id}:{},v),x);
+  const la=S.acad[0],laTxt=la?`${la.subject}: ${tex2txt(typeof la.answer==='string'?la.answer:'')||tex2txt(la.problem).slice(0,40)}`:'Drop a problem screenshot to solve it';
+  const pu=h('div',{class:'card am'},h('span',{class:'sub'},'Push-ups today'),h('b',{},puTotal(T)+' reps'),
+    h('div',{class:'row'},[10,20,25].map(n=>h('button',{class:'btn am',style:'flex:1;min-height:40px',onclick:()=>addPU(n)},'+'+n)),h('button',{class:'btn',style:'flex:none;min-height:40px',onclick:pushupModal},'LOG')));
+  $('grid').replaceChildren(
+    C('Study',S.run?clk(Date.now()-S.run):`${studyMin(T)} min`,studyModal,0,'cs'),
+    C('Weight',S.weight[T]!=null?S.weight[T]+' kg':'-- kg',weightModal),
+    C('Sleep',S.sleep[T]?S.sleep[T].h+' h':'-- h',sleepModal),
+    C('Steps',S.steps[T]?S.steps[T].n.toLocaleString('en-US'):'0',stepsModal),
+    pu,
+    C('Refuel',`${Math.round(L.reduce((a,x)=>a+x.kcal,0))} / ${TG().kcal} kcal`,refuelModal,1),
+    C('Homework',S.hw.filter(x=>!x.done).length+' open',hwModal,1),
+    C('Academic terminal',S.acad.length+' solved',acadModal,0,'',h('div',{class:'mu',style:'font-size:11px;margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},laTxt)),
+    C('Hypertrophy log',Object.keys(S.gym).length+' sessions',gymModal),
+    C('Strength recap','Weekly ➔',recapModal,1),
+    C('Exam analytics',(examStats().overall??'--')+'%',examModal),
+    C('Chat terminal','Online',chatModal,1),
+    C('J.A.R.V.I.S. command','Online',jarvisModal),
+    C('System config','⚙',settingsModal,1));
+  if(cur&&cur.live&&$('modal').classList.contains('on'))$('mb').replaceChildren(cur.mk());
+}
+$('hs').onclick=()=>{hap();settingsModal()};
+const t0=Date.now();
+setInterval(()=>{$('up').textContent=clk(Date.now()-t0);if(S.run){const e=$('cs');if(e)e.textContent=clk(Date.now()-S.run);const m=$('stm');if(m)m.textContent=clk(Date.now()-S.run)}},1000);
+if('serviceWorker' in navigator&&/^https?:$/.test(location.protocol))navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
